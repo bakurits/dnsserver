@@ -2,7 +2,9 @@ import sys
 import os
 import socket
 from struct import unpack
+from struct import pack
 from threading import Thread
+import copy
 
 Max_data_size = 4096
 
@@ -27,17 +29,27 @@ class DnsRetriever:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('', 0))
+        self.sock.settimeout(2)
 
-    def get_response(self, data):
-        self.sock.sendto(data, (self.root_dns_servers[0], 53))
-        data, addr = self.sock.recvfrom(Max_data_size)
-        message = DnsMessage(data)
-        print(addr)
+    def get_response(self, data: bytes, ip_addr=root_dns_servers[0]):
+        random_bits = os.urandom(2)
+
+        data = random_bits + data[2:]
+        server_address = (str(ip_addr), 53)
+        self.sock.sendto(data, server_address)
+
+        while True:
+            try:
+                data, addr = self.sock.recvfrom(Max_data_size)
+                if data[:2] == random_bits:
+                    return DnsMessage(data)
+            except OSError:
+                return None
 
 
 class DnsMessage:
 
-    def __init__(self, data):
+    def __init__(self, data: bytes):
         lst = unpack("!HHHHHH", data[:12])
         self.isResponse = lst[1] & int('1000000000000000', 2) >> 15
         self.recursion = lst[1] & int('0000001000000000', 2) >> 9
@@ -50,19 +62,19 @@ class DnsMessage:
         self.answers = []
         self.authority = []
         self.additional = []
-        self.data = data
+        self.data = copy.copy(data)
         self.questions_offset = 12
         offset = 12
         for _ in range(self.question_count):
             q_name = bytearray()
             while True:
-                label_len = unpack("!b", data[offset: offset + 1])[0]
+                label_len = unpack("!b", self.data[offset: offset + 1])[0]
                 offset += 1
                 if label_len == 0:
                     break
 
                 if (label_len >> 6 & 3) == 3:
-                    ptr = unpack("!H", data[offset - 1: offset + 1])[0]
+                    ptr = unpack("!H", self.data[offset - 1: offset + 1])[0]
                     ptr = ptr & int('0011111111111111', 2)
                     q_name += self.get_txt_from_offset(ptr)
                     q_name += b"."
@@ -72,9 +84,9 @@ class DnsMessage:
                     q_name += self.data[offset: offset + label_len]
                     offset += label_len
                     q_name += b"."
-
-            q_type, q_class = unpack("!HH", data[offset: offset + 4])
-            question = {"qname": q_name, "qtype": q_type, "qclass": q_class}
+            self.questions_name_end = offset
+            q_type, q_class = unpack("!HH", self.data[offset: offset + 4])
+            question = {"qname": bytes(q_name), "qtype": q_type, "qclass": q_class}
             self.questions.append(question)
             offset += 4
 
@@ -83,12 +95,7 @@ class DnsMessage:
         self.additional_offset = self.parse_answers(offset, self.authority, self.authority_count)
         self.parse_answers(offset, self.additional, self.additional_count)
 
-        print(self.questions)
-        print(self.answers)
-        print(self.authority)
-        print(self.additional)
-
-    def get_txt_from_offset(self, offset):
+    def get_txt_from_offset(self, offset: int):
         label_len = unpack("!b", self.data[offset: offset + 1])[0]
         if (label_len >> 6 & 3) == 3:
             ptr = label_len & int('00111111', 2)
@@ -96,7 +103,7 @@ class DnsMessage:
         else:
             return self.data[offset: offset + label_len + 1]
 
-    def parse_answers(self, offset, lst, cnt):
+    def parse_answers(self, offset: int, lst: list, cnt: int):
         for _ in range(cnt):
             a_name = bytearray()
             while True:
@@ -120,50 +127,78 @@ class DnsMessage:
 
             a_type, a_class, a_ttl, a_data_len = unpack("!HHIH", self.data[offset: offset + 10])
             a_data = self.data[offset + 10: offset + 10 + a_data_len]
-            answer = {"aname": a_name, "atype": a_type, "aclass": a_class, "attl": a_ttl,
+            answer = {"aname": bytes(a_name), "atype": a_type, "aclass": a_class, "attl": a_ttl,
                       "adatalen": a_data_len, "adata": a_data}
             lst.append(answer)
             offset += 10 + a_data_len
         return offset
 
 
-def parse_dns_message(data: bytes):
-    lst = unpack("!HHHHHH", data[:12])
-    isResponse = lst[1] & int('1000000000000000', 2) >> 15
-    opCode = lst[1] & int('0111100000000000', 2) >> 11
-    truncated = lst[1] & int('0000010000000000', 2) >> 10
-    recursion = lst[1] & int('0000001000000000', 2) >> 9
-    res = {"ID": lst[0],
-           "isResponse": isResponse,
-           "truncated": truncated,
-           "opCode": opCode,
-           "recursion": recursion,
-           "questions": lst[2],
-           "answers": lst[3],
-           "authority": lst[4],
-           "additional": lst[5]}
-    return res
+def ip_to_string(data: bytes):
+    res = ""
+    for octet in data:
+        res += str(octet) + "."
+    return res[: -1]
 
 
-def handle_client(sock: socket, addr, data: bytes, dns_retriever: DnsRetriever):
-    print(data)
-    print(addr)
+def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: list):
+    if len(ip_addrs) == 0:
+        return None
+    for ip_addr in ip_addrs:
+        response = dns_retriever.get_response(message.data, ip_addr)
+        if not response:
+            continue
+        if response.answer_count > 0:
+            return response
+        checked_resources = []
+        for additional_answer in response.additional:
+            checked_resources.append(additional_answer["aname"])
+            if additional_answer["atype"] == 1:
+                print(additional_answer)
+                ans = dns_recursion(dns_retriever, message, [ip_to_string(additional_answer["adata"])])
+                if ans:
+                    return ans
+
+        for aut_server in response.authority:
+            if not aut_server["aname"] in checked_resources:
+                labels = aut_server["aname"].split(b".")
+                new_name = bytearray()
+                for label in labels:
+                    new_name += pack("!Hs", len(label), label)
+                new_name += 0
+                data = copy.copy(message.data)
+                data = data[: message.questions_offset] + new_name + data[message.questions_name_end]
+                cur_response = dns_recursion(dns_retriever, DnsMessage(data), DnsRetriever.root_dns_servers)
+                if cur_response:
+                    lst = []
+                    for cur_answer in cur_response.answers:
+                        if cur_answer["atype"] == 1:
+                            lst.append(ip_to_string(cur_answer["adata"]))
+                    ans = dns_recursion(dns_retriever, message, lst)
+                    if ans:
+                        return ans
+
+def handle_client(sock: socket, addr: tuple, data: bytes, dns_retriever: DnsRetriever):
     message = DnsMessage(data)
-    if message.isResponse != 0:
-        return
-    dns_retriever.get_response(data)
+    response = dns_recursion(dns_retriever, message, DnsRetriever.root_dns_servers)
+    answer = message.data[:2] + response.data[2:]
+    sock.sendto(answer, addr)
 
 
-def run_dns_server(configpath):
+def run_dns_server(config_path: str):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", 8080))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     dns_retriever = DnsRetriever()
-    print(configpath)
+    print(config_path)
 
     while True:
         data, addr = sock.recvfrom(Max_data_size)
-        Thread(target=handle_client, args=(sock, addr, data, dns_retriever)).start()
+        t = Thread(target=handle_client, args=(sock, addr, data, dns_retriever))
+        t.start()
+        t.join(10)
+        if t.is_alive():
+            print("can't get answer")
 
 
 # do not change!
