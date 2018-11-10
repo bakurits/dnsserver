@@ -9,43 +9,6 @@ from utils import ip_to_string
 import constraints
 
 
-class DnsRetriever:
-    root_dns_servers = [
-        "198.41.0.4",
-        "192.228.79.201",
-        "192.33.4.12",
-        "199.7.91.13",
-        "192.203.230.10",
-        "192.5.5.241",
-        "192.112.36.4",
-        "128.63.2.53",
-        "192.36.148.17",
-        "192.58.128.30",
-        "193.0.14.129",
-        "199.7.83.42",
-        "202.12.27.33"]
-
-    def __init__(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    def get_response(self, data: bytes, ip_addr=root_dns_servers[0]):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.settimeout(1)
-
-        server_address = (str(ip_addr), 53)
-
-        for _ in range(3):
-            self.sock.sendto(data, server_address)
-            try:
-                data, addr = self.sock.recvfrom(constraints.max_data_size)
-                return DnsMessage(data)
-            except OSError:
-                continue
-
-        return None
-
-
 class DnsMessage:
     A = 1
     NS = 2
@@ -72,7 +35,7 @@ class DnsMessage:
             q_name, offset = self.get_name(self.data, offset)
             self.questions_name_end = offset
             q_type, q_class = unpack("!HH", self.data[offset: offset + 4])
-            question = {"qname": q_name, "qtype": q_type, "qclass": q_class}
+            question = {"qname": to_lower(q_name), "qtype": q_type, "qclass": q_class}
             self.questions.append(question)
             offset += 4
 
@@ -126,18 +89,56 @@ class DnsMessage:
             a_data, offset = self.parse_a_data(a_data_len, a_type, self.data, offset + 10)
             if a_type == DnsMessage.NS:
                 a_data = to_lower(a_data)
-            answer = {"aname": a_name, "atype": a_type, "aclass": a_class, "attl": a_ttl,
+            answer = {"aname": to_lower(a_name), "atype": a_type, "aclass": a_class, "attl": a_ttl,
                       "adatalen": a_data_len, "adata": a_data}
             lst.append(answer)
         return offset
 
 
+class DnsRetriever:
+    root_dns_servers = [
+        "198.41.0.4",
+        "192.228.79.201",
+        "192.33.4.12",
+        "199.7.91.13",
+        "192.203.230.10",
+        "192.5.5.241",
+        "192.112.36.4",
+        "128.63.2.53",
+        "192.36.148.17",
+        "192.58.128.30",
+        "193.0.14.129",
+        "199.7.83.42",
+        "202.12.27.33"]
+
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def get_response(self, message: DnsMessage, ip_addr=root_dns_servers[0]):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.settimeout(1)
+
+        server_address = (str(ip_addr), 53)
+
+        for _ in range(3):
+            self.sock.sendto(message.data, server_address)
+            try:
+                data, addr = self.sock.recvfrom(constraints.max_data_size)
+                return DnsMessage(data)
+            except OSError:
+                continue
+
+        return None
+
+
 def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: list):
     if len(ip_addrs) == 0:
         return None
-
+    print(message.questions)
+    print(ip_addrs)
     for ip_addr in ip_addrs:
-        response = dns_retriever.get_response(message.data, ip_addr)
+        response = dns_retriever.get_response(message, ip_addr)
         if not response:
             continue
         if response.answer_count > 0:
@@ -184,8 +185,9 @@ def run_dns_server(config_path: str):
         data, addr = sock.recvfrom(constraints.max_data_size)
         p = multiprocessing.Process(target=handle_client, args=(sock, addr, data, dns_retriever))
         p.start()
-        p.join(10)
+        p.join(1000)
         if p.is_alive():
+            print("Can't find enything")
             p.terminate()
             p.join()
 
