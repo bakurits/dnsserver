@@ -1,14 +1,11 @@
 import sys
-import os
 import socket
 from struct import unpack
-from struct import pack
-from threading import Thread
-import multiprocessing
 import copy
-
-max_data_size = 4096
-
+from utils import to_lower
+from utils import get_labels_from_string
+from utils import ip_to_string
+import constraints
 
 class DnsRetriever:
     root_dns_servers = [
@@ -32,15 +29,19 @@ class DnsRetriever:
     def get_response(self, data: bytes, ip_addr=root_dns_servers[0]):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.settimeout(2)
+        self.sock.settimeout(1)
 
         server_address = (str(ip_addr), 53)
-        self.sock.sendto(data, server_address)
-        try:
-            data, addr = self.sock.recvfrom(max_data_size)
-            return DnsMessage(data)
-        except OSError:
-            return None
+
+        for _ in range(3):
+            self.sock.sendto(data, server_address)
+            try:
+                data, addr = self.sock.recvfrom(constraints.max_data_size)
+                return DnsMessage(data)
+            except OSError:
+                continue
+
+        return None
 
 
 class DnsMessage:
@@ -73,10 +74,6 @@ class DnsMessage:
         self.authority_offset = self.parse_answers(offset, self.answers, self.answer_count)
         self.additional_offset = self.parse_answers(self.authority_offset, self.authority, self.authority_count)
         self.parse_answers(self.additional_offset, self.additional, self.additional_count)
-        # print(self.questions)
-        # print(self.answers)
-        # print(self.authority)
-        # print(self.additional)
 
     def get_txt_from_offset(self, offset: int):
         label_len = unpack("!b", self.data[offset: offset + 1])[0]
@@ -111,7 +108,7 @@ class DnsMessage:
                 offset += 1
                 break
             else:
-                a_name += data[offset: offset + label_len]
+                a_name += to_lower(data[offset: offset + label_len])
                 offset += label_len
                 a_name += b"."
         return bytes(a_name), offset
@@ -125,23 +122,6 @@ class DnsMessage:
                       "adatalen": a_data_len, "adata": a_data}
             lst.append(answer)
         return offset
-
-
-def ip_to_string(data: bytes):
-    res = ""
-    for octet in data:
-        res += str(octet) + "."
-    return res[: -1]
-
-
-def get_labels_from_string(data):
-    labels = data.split(b".")
-    new_name = bytearray()
-    for label in labels:
-        new_name += pack("!b", len(label)) + label
-    if new_name[-1:][0] != 0:
-        new_name += bytes(0)
-    return bytes(new_name)
 
 
 def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: list):
@@ -159,9 +139,6 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
         for additional_answer in response.additional:
             if additional_answer["atype"] == 1:
                 additional_records[additional_answer["aname"]] = ip_to_string(additional_answer["adata"])
-                # ans = dns_recursion(dns_retriever, message, [ip_to_string(additional_answer["adata"])])
-                # if ans:
-                #     return ans
 
         for aut_server in response.authority:
             name = aut_server["adata"]
@@ -193,13 +170,13 @@ def handle_client(sock: socket, addr: tuple, data: bytes, dns_retriever: DnsRetr
 
 def run_dns_server(config_path: str):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("127.0.0.1", 8080))
+    sock.bind((constraints.listen_ip, constraints.listen_port))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     dns_retriever = DnsRetriever()
     print(config_path)
 
     while True:
-        data, addr = sock.recvfrom(max_data_size)
+        data, addr = sock.recvfrom(constraints.max_data_size)
         p = multiprocessing.Process(target=handle_client, args=(sock, addr, data, dns_retriever))
         p.start()
         p.join(10)
