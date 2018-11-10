@@ -1,11 +1,13 @@
 import sys
 import socket
 from struct import unpack
+import multiprocessing
 import copy
 from utils import to_lower
 from utils import get_labels_from_string
 from utils import ip_to_string
 import constraints
+
 
 class DnsRetriever:
     root_dns_servers = [
@@ -45,6 +47,10 @@ class DnsRetriever:
 
 
 class DnsMessage:
+    A = 1
+    NS = 2
+    AAAA = 28
+    OPT = 41
 
     def __init__(self, data: bytes):
         lst = unpack("!HHHHHH", data[:12])
@@ -88,7 +94,7 @@ class DnsMessage:
                     offset + label_len + 1)
 
     def parse_a_data(self, a_len: int, a_type: int, data: bytes, offset: int):
-        if a_type == 2:
+        if a_type == DnsMessage.NS:
             return self.get_name(data, offset)
         else:
             return data[offset: offset + a_len], offset + a_len
@@ -108,7 +114,7 @@ class DnsMessage:
                 offset += 1
                 break
             else:
-                a_name += to_lower(data[offset: offset + label_len])
+                a_name += data[offset: offset + label_len]
                 offset += label_len
                 a_name += b"."
         return bytes(a_name), offset
@@ -118,6 +124,8 @@ class DnsMessage:
             a_name, offset = self.get_name(self.data, offset)
             a_type, a_class, a_ttl, a_data_len = unpack("!HHIH", self.data[offset: offset + 10])
             a_data, offset = self.parse_a_data(a_data_len, a_type, self.data, offset + 10)
+            if a_type == DnsMessage.NS:
+                a_data = to_lower(a_data)
             answer = {"aname": a_name, "atype": a_type, "aclass": a_class, "attl": a_ttl,
                       "adatalen": a_data_len, "adata": a_data}
             lst.append(answer)
@@ -128,7 +136,6 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
     if len(ip_addrs) == 0:
         return None
 
-    print(message.questions[0])
     for ip_addr in ip_addrs:
         response = dns_retriever.get_response(message.data, ip_addr)
         if not response:
@@ -137,7 +144,7 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
             return response
         additional_records = {}
         for additional_answer in response.additional:
-            if additional_answer["atype"] == 1:
+            if additional_answer["atype"] == DnsMessage.A:
                 additional_records[additional_answer["aname"]] = ip_to_string(additional_answer["adata"])
 
         for aut_server in response.authority:
@@ -154,9 +161,8 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
                 if cur_response:
                     lst = []
                     for cur_answer in cur_response.answers:
-                        if cur_answer["atype"] == 1:
+                        if cur_answer["atype"] == DnsMessage.A:
                             lst.append(ip_to_string(cur_answer["adata"]))
-                        print(lst)
                         ans = dns_recursion(dns_retriever, message, lst)
                         if ans:
                             return ans
@@ -173,7 +179,6 @@ def run_dns_server(config_path: str):
     sock.bind((constraints.listen_ip, constraints.listen_port))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     dns_retriever = DnsRetriever()
-    print(config_path)
 
     while True:
         data, addr = sock.recvfrom(constraints.max_data_size)
@@ -181,7 +186,6 @@ def run_dns_server(config_path: str):
         p.start()
         p.join(10)
         if p.is_alive():
-            print("can't get answer")
             p.terminate()
             p.join()
 
