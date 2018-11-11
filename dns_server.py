@@ -1,12 +1,14 @@
 import sys
 import socket
 from struct import unpack
-import multiprocessing
+from threading import Thread
 import copy
 from utils import to_lower
 from utils import get_labels_from_string
 from utils import ip_to_string
 import constraints
+import time
+from easyzone import easyzone
 
 
 class DnsMessage:
@@ -43,18 +45,6 @@ class DnsMessage:
         self.authority_offset = self.parse_answers(offset, self.answers, self.answer_count)
         self.additional_offset = self.parse_answers(self.authority_offset, self.authority, self.authority_count)
         self.parse_answers(self.additional_offset, self.additional, self.additional_count)
-
-    def get_txt_from_offset(self, offset: int):
-        label_len = unpack("!b", self.data[offset: offset + 1])[0]
-        if (label_len >> 6 & 3) == 3:
-            ptr = label_len & int('00111111', 2)
-            return self.get_txt_from_offset(ptr)
-        else:
-            if label_len == 0:
-                return b""
-            else:
-                return self.data[offset: offset + label_len + 1] + b"." + self.get_txt_from_offset(
-                    offset + label_len + 1)
 
     def parse_a_data(self, a_len: int, a_type: int, data: bytes, offset: int):
         if a_type == DnsMessage.NS:
@@ -112,20 +102,69 @@ class DnsRetriever:
         "202.12.27.33"]
 
     def __init__(self):
+        self.cache = {}
+        self.ip_cache = {}
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+    def cache_dns_response(self, response: DnsMessage):
+        ttl = 2**60
+        for cur_answer in response.answers:
+            ttl = min(ttl, cur_answer["attl"])
+        for cur_answer in response.authority:
+            ttl = min(ttl, cur_answer["attl"])
+        for cur_answer in response.additional:
+            ttl = min(ttl, cur_answer["attl"])
+        key = (response.questions[0]["qname"], response.questions[0]["qclass"], response.questions[0]["qtype"])
+        self.cache[key] = (ttl + time.time(), response)
+
+    def get_cached_response(self, message: DnsMessage):
+        key = (message.questions[0]["qname"], message.questions[0]["qclass"], message.questions[0]["qtype"])
+        if key not in self.cache:
+            return None
+        if self.cache[key][0] > time.time():
+            del self.cache[key]
+        if key not in self.cache:
+            return None
+        else:
+            return self.cache[key][1]
+
+    def cache_ips(self, domain_name: bytes, response: DnsMessage):
+        if domain_name not in self.ip_cache:
+            self.ip_cache[domain_name] = []
+
+        for cur_answer in response.answers:
+            if cur_answer["atype"] == DnsMessage.A:
+                self.ip_cache[domain_name].append(
+                    {"expiration_date": time.time() + cur_answer["attl"], "ip": ip_to_string(cur_answer["adata"])})
+
+    def get_cached_ips(self, domain_name: bytes):
+        if domain_name not in self.ip_cache:
+            return []
+        self.ip_cache[domain_name] = [ip_info for ip_info in self.ip_cache[domain_name] if
+                                      ip_info["expiration_date"] >= time.time()]
+
+        if len(self.ip_cache[domain_name]) == 0:
+            del self.ip_cache[domain_name]
+            return []
+        else:
+            return [ip_info["ip"] for ip_info in self.ip_cache[domain_name]]
+
     def get_response(self, message: DnsMessage, ip_addr=root_dns_servers[0]):
+        cached_response = self.get_cached_response(message)
+        if cached_response:
+            return cached_response
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.settimeout(1)
-
         server_address = (str(ip_addr), 53)
 
         for _ in range(3):
             self.sock.sendto(message.data, server_address)
             try:
                 data, addr = self.sock.recvfrom(constraints.max_data_size)
-                return DnsMessage(data)
+                response = DnsMessage(data)
+                return response
             except OSError:
                 continue
 
@@ -135,13 +174,12 @@ class DnsRetriever:
 def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: list):
     if len(ip_addrs) == 0:
         return None
-    print(message.questions)
-    print(ip_addrs)
     for ip_addr in ip_addrs:
         response = dns_retriever.get_response(message, ip_addr)
         if not response:
             continue
         if response.answer_count > 0:
+            dns_retriever.cache_dns_response(response)
             return response
         additional_records = {}
         for additional_answer in response.additional:
@@ -150,29 +188,36 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
 
         for aut_server in response.authority:
             name = aut_server["adata"]
+            if aut_server["atype"] != DnsMessage.NS:
+                continue
             if name in additional_records:
                 ans = dns_recursion(dns_retriever, message, [additional_records[name]])
                 if ans:
+                    dns_retriever.cache_dns_response(ans)
                     return ans
             else:
                 data = copy.copy(message.data)
-                data = data[: message.questions_offset] + get_labels_from_string(name) + data[
-                                                                                         message.questions_name_end:]
-                cur_response = dns_recursion(dns_retriever, DnsMessage(data), DnsRetriever.root_dns_servers)
-                if cur_response:
-                    lst = []
-                    for cur_answer in cur_response.answers:
-                        if cur_answer["atype"] == DnsMessage.A:
-                            lst.append(ip_to_string(cur_answer["adata"]))
-                        ans = dns_recursion(dns_retriever, message, lst)
-                        if ans:
-                            return ans
+                lst = dns_retriever.get_cached_ips(name)
+                if len(lst) == 0:
+                    data = data[: message.questions_offset] + get_labels_from_string(name) + data[
+                                                                                             message.questions_name_end:]
+                    cur_response = dns_recursion(dns_retriever, DnsMessage(data), DnsRetriever.root_dns_servers)
+                    if cur_response:
+                        dns_retriever.cache_ips(name, cur_response)
+                lst = dns_retriever.get_cached_ips(name)
+                ans = dns_recursion(dns_retriever, message, lst)
+                if ans:
+                    dns_retriever.cache_dns_response(ans)
+                    return ans
 
 
 def handle_client(sock: socket, addr: tuple, data: bytes, dns_retriever: DnsRetriever):
     message = DnsMessage(data)
     response = dns_recursion(dns_retriever, message, DnsRetriever.root_dns_servers)
-    sock.sendto(response.data, addr)
+    if response:
+        sock.sendto(data[:2] + response.data[2:], addr)
+    else:
+        sock.sendto(data, addr)
 
 
 def run_dns_server(config_path: str):
@@ -180,16 +225,14 @@ def run_dns_server(config_path: str):
     sock.bind((constraints.listen_ip, constraints.listen_port))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     dns_retriever = DnsRetriever()
-
     while True:
         data, addr = sock.recvfrom(constraints.max_data_size)
-        p = multiprocessing.Process(target=handle_client, args=(sock, addr, data, dns_retriever))
-        p.start()
-        p.join(1000)
-        if p.is_alive():
-            print("Can't find enything")
-            p.terminate()
-            p.join()
+        t = Thread(target=handle_client, args=(sock, addr, data, dns_retriever))
+        t.start()
+        t.join(3)
+        if t.is_alive():
+            print("Can't find anything")
+            t.join()
 
 
 # do not change!
