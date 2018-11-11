@@ -107,21 +107,27 @@ class DnsRetriever:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def cache_dns_response(self, response: DnsMessage):
-        ttl = 2**60
+        ttl = 2 ** 60
         for cur_answer in response.answers:
-            ttl = min(ttl, cur_answer["attl"])
+            if cur_answer["atype"] in [DnsMessage.A, DnsMessage.AAAA, DnsMessage.NS]:
+                ttl = min(ttl, cur_answer["attl"])
         for cur_answer in response.authority:
-            ttl = min(ttl, cur_answer["attl"])
+            if cur_answer["atype"] in [DnsMessage.A, DnsMessage.AAAA, DnsMessage.NS]:
+                ttl = min(ttl, cur_answer["attl"])
         for cur_answer in response.additional:
-            ttl = min(ttl, cur_answer["attl"])
+            if cur_answer["atype"] in [DnsMessage.A, DnsMessage.AAAA, DnsMessage.NS]:
+                ttl = min(ttl, cur_answer["attl"])
         key = (response.questions[0]["qname"], response.questions[0]["qclass"], response.questions[0]["qtype"])
-        self.cache[key] = (ttl + time.time(), response)
+        print(ttl)
+        if key not in self.cache:
+            print("new data")
+            self.cache[key] = (ttl + time.time(), response)
 
     def get_cached_response(self, message: DnsMessage):
         key = (message.questions[0]["qname"], message.questions[0]["qclass"], message.questions[0]["qtype"])
         if key not in self.cache:
             return None
-        if self.cache[key][0] > time.time():
+        if self.cache[key][0] < time.time():
             del self.cache[key]
         if key not in self.cache:
             return None
