@@ -316,12 +316,13 @@ def run_dns_server(config_path: str):
 
     while True:
         data, addr = sock.recvfrom(constraints.max_data_size)
-        t = Thread(target=handle_client, args=(sock, addr, data, dns_retriever))
-        t.start()
-        t.join(3)
-        if t.is_alive():
-            print("Can't find anything")
-            t.join()
+        handle_client(sock, addr, data, dns_retriever)
+        # t = Thread(target=handle_client, args=(sock, addr, data, dns_retriever))
+        # t.start()
+        # t.join(3)
+        # if t.is_alive():
+        #     print("Can't find anything")
+        #     t.join()
 
 
 # do not change!
