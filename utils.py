@@ -6,7 +6,7 @@ def ip_to_string(data: bytes):
         res += str(octet) + "."
     return res[: -1]
 
-def get_labels_from_string(data):
+def get_labels_from_string(data:bytes):
     labels = data.split(b".")
     new_name = bytearray()
     for label in labels:
