@@ -262,7 +262,19 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
             if additional_answer["atype"] == DnsMessage.A:
                 additional_records[additional_answer["aname"]] = ip_to_string(additional_answer["adata"])
 
+        with_ips = []
+        without_ips = []
         for aut_server in response.authority:
+            name = aut_server["adata"]
+            if aut_server["atype"] != DnsMessage.NS:
+                without_ips.append(aut_server)
+                continue
+            if name in additional_records:
+                with_ips.append(aut_server)
+            else:
+                without_ips.append(aut_server)
+        auth_servers = with_ips + without_ips
+        for aut_server in auth_servers:
             name = aut_server["adata"]
             if aut_server["atype"] != DnsMessage.NS:
                 continue
