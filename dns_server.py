@@ -1,4 +1,5 @@
 import sys
+import os
 import socket
 from struct import unpack
 from threading import Thread
@@ -16,6 +17,7 @@ class DnsMessage:
     NS = 2
     AAAA = 28
     OPT = 41
+    codes = {1: "A", 2: "NS", 28: "AAAA", 41: "OPT"}
 
     def __init__(self, data: bytes):
         lst = unpack("!HHHHHH", data[:12])
@@ -84,6 +86,24 @@ class DnsMessage:
             lst.append(answer)
         return offset
 
+    def __str__(self):
+        res = ""
+        res += 'Answer section:\n'
+        for answer in self.answers:
+            res += "{}    {}      {}      {}     {}\n".format(answer["aname"].decode("ascii"), answer["attl"], "IN",
+                                                              DnsMessage.codes[answer["atype"]], answer["adata"])
+
+        res += 'Authority section:\n'
+        for answer in self.authority:
+            res += "{}    {}      {}      {}     {}\n".format(answer["aname"].decode("ascii"), answer["attl"], "IN",
+                                                              DnsMessage.codes[answer["atype"]], answer["adata"])
+
+        res += 'Additional section:\n'
+        for answer in self.additional:
+            res += "{}    {}      {}      {}     {}\n".format(answer["aname"].decode("ascii"), answer["attl"], "IN",
+                                                              DnsMessage.codes[answer["atype"]], answer["adata"])
+        return res
+
 
 class DnsRetriever:
     root_dns_servers = [
@@ -118,9 +138,7 @@ class DnsRetriever:
             if cur_answer["atype"] in [DnsMessage.A, DnsMessage.AAAA, DnsMessage.NS]:
                 ttl = min(ttl, cur_answer["attl"])
         key = (response.questions[0]["qname"], response.questions[0]["qclass"], response.questions[0]["qtype"])
-        print(ttl)
         if key not in self.cache:
-            print("new data")
             self.cache[key] = (ttl + time.time(), response)
 
     def get_cached_response(self, message: DnsMessage):
@@ -182,6 +200,9 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
         return None
     for ip_addr in ip_addrs:
         response = dns_retriever.get_response(message, ip_addr)
+        print("Asking {} about {}                 {}              {}".format(ip_addr, message.questions[0]["qname"].decode("ascii"), "IN",
+                                                   DnsMessage.codes[message.questions[0]["qtype"]]))
+        print(response)
         if not response:
             continue
         if response.answer_count > 0:
@@ -226,11 +247,20 @@ def handle_client(sock: socket, addr: tuple, data: bytes, dns_retriever: DnsRetr
         sock.sendto(data, addr)
 
 
+def fill_from_config_files(config_path: str, dns_retriever: DnsRetriever):
+    for filename in os.listdir(config_path):
+        z = easyzone.zone_from_file(filename[:-5], config_path + "/" + filename)
+        print(z.root.records('MX').items)
+
+
 def run_dns_server(config_path: str):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((constraints.listen_ip, constraints.listen_port))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
     dns_retriever = DnsRetriever()
+    fill_from_config_files(config_path, dns_retriever)
+
     while True:
         data, addr = sock.recvfrom(constraints.max_data_size)
         t = Thread(target=handle_client, args=(sock, addr, data, dns_retriever))
