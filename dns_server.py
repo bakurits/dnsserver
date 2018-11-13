@@ -114,21 +114,28 @@ class DnsMessage:
 class DnsRetriever:
     root_dns_servers = [
         "198.41.0.4",
-        # "192.228.79.201",
-        # "192.33.4.12",
-        # "199.7.91.13",
-        # "192.203.230.10",
-        # "192.5.5.241",
-        # "192.112.36.4",
-        # "128.63.2.53",
-        # "192.36.148.17",
-        # "192.58.128.30",
-        # "193.0.14.129",
-        # "199.7.83.42",
-        # "202.12.27.33"
-        ]
+        "192.228.79.201",
+        "192.33.4.12",
+        "199.7.91.13",
+        "192.203.230.10",
+        "192.5.5.241",
+        "192.112.36.4",
+        "128.63.2.53",
+        "192.36.148.17",
+        "192.58.128.30",
+        "193.0.14.129",
+        "199.7.83.42",
+        "202.12.27.33"
+    ]
+
+    def get_root_server(self):
+        return self.root_dns_servers[self.root_dns_servers_id]
+
+    def change_root_server(self):
+        self.root_dns_servers_id = (self.root_dns_servers_id + 1) % len(self.root_dns_servers)
 
     def __init__(self):
+        self.root_dns_servers_id = 0
         self.cache = {}
         self.zone_files = {}
         self.ip_cache = {}
@@ -150,27 +157,27 @@ class DnsRetriever:
             if tp == DnsMessage.MX:
                 pr, tx = answer
                 tx = get_labels_from_string(tx.encode("ascii"))
-                res_data += pack("!HHHIHH", int("1100000000001100", 2), DnsMessage.MX, 1, 3000, len(tx) + 2, pr) + tx
+                res_data += pack("!HHHIHH", int("1100000000001100", 2), DnsMessage.MX, 1, z.names.ttl, len(tx) + 2,
+                                 pr) + tx
             elif tp == DnsMessage.TXT:
                 tx = answer
                 tx = tx.encode("ascii")
-                res_data += pack("!HHHIHB", int("1100000000001100", 2), DnsMessage.TXT, 1, 3000, len(tx) + 1,
+                res_data += pack("!HHHIHB", int("1100000000001100", 2), DnsMessage.TXT, 1, z.names.ttl, len(tx) + 1,
                                  len(tx)) + tx
             elif tp == DnsMessage.NS:
                 tx = answer
                 tx = get_labels_from_string(tx.encode("ascii"))
-                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.NS, 1, 3000, len(tx)) + tx
+                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.NS, 1, z.names.ttl, len(tx)) + tx
             elif tp == DnsMessage.A:
                 tx = answer
                 tx = tx.encode("ascii").split(b".")
-                res_data += pack("!HHHIHBBBB", int("1100000000001100", 2), DnsMessage.A, 1, 3000, 4, int(tx[0]),
+                res_data += pack("!HHHIHBBBB", int("1100000000001100", 2), DnsMessage.A, 1, z.names.ttl, 4, int(tx[0]),
                                  int(tx[1]), int(tx[2]), int(tx[3]))
             elif tp == DnsMessage.SOA:
                 tx = answer.split(" ")
                 data = get_labels_from_string(tx[0].encode("ascii")) + get_labels_from_string(tx[1].encode("ascii"))
                 data += pack("!IIIII", int(tx[2]), int(tx[3]), int(tx[4]), int(tx[5]), int(tx[6]))
-                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.SOA, 1, 3000, len(data)) + data
-               # 'ns1.google.com. dns-admin.google.com. 2016032800 3600 1800 3456000 1800'
+                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.SOA, 1, z.names.ttl, len(data)) + data
         return DnsMessage(res_data)
 
     def cache_dns_response(self, response: DnsMessage):
@@ -220,7 +227,7 @@ class DnsRetriever:
         else:
             return [ip_info["ip"] for ip_info in self.ip_cache[domain_name]]
 
-    def get_response(self, message: DnsMessage, ip_addr=root_dns_servers[0]):
+    def get_response(self, message: DnsMessage, ip_addr: str):
         cached_response = self.get_cached_response(message)
         if cached_response:
             return cached_response
@@ -238,17 +245,23 @@ class DnsRetriever:
                 return response
             except OSError:
                 continue
-
+        if ip_addr in DnsRetriever.root_dns_servers:
+            self.change_root_server()
+            return self.get_response(message, self.get_root_server())
         return None
 
-def get_additional_answers(response):
+
+# This method is for store additional answers in dictionary
+def get_additional_answers(response: DnsMessage):
     additional_records = {}
     for additional_answer in response.additional:
         if additional_answer["atype"] == DnsMessage.A:
             additional_records[additional_answer["aname"]] = ip_to_string(additional_answer["adata"])
     return additional_records
 
-def get_auth_servers_by_priority(response, additional_records):
+
+# This method returns authority servers by priority
+def get_auth_servers_by_priority(response: DnsMessage, additional_records: dict):
     with_ips = []
     without_ips = []
     for aut_server in response.authority:
@@ -261,6 +274,7 @@ def get_auth_servers_by_priority(response, additional_records):
         else:
             without_ips.append(aut_server)
     return with_ips + without_ips
+
 
 def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: list):
     if len(ip_addrs) == 0:
@@ -297,7 +311,7 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
                 if len(lst) == 0:
                     data = data[: message.questions_offset] + get_labels_from_string(name) + data[
                                                                                              message.questions_name_end:]
-                    cur_response = dns_recursion(dns_retriever, DnsMessage(data), DnsRetriever.root_dns_servers)
+                    cur_response = dns_recursion(dns_retriever, DnsMessage(data), [dns_retriever.get_root_server()])
                     if cur_response:
                         dns_retriever.cache_ips(name, cur_response)
                 lst = dns_retriever.get_cached_ips(name)
@@ -313,7 +327,7 @@ def handle_client(sock: socket, addr: tuple, data: bytes, dns_retriever: DnsRetr
     if res_from_zone:
         response = res_from_zone
     else:
-        response = dns_recursion(dns_retriever, message, DnsRetriever.root_dns_servers)
+        response = dns_recursion(dns_retriever, message, [dns_retriever.get_root_server()])
     if response:
         sock.sendto(data[:2] + response.data[2:], addr)
     else:
