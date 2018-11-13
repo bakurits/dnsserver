@@ -114,18 +114,19 @@ class DnsMessage:
 class DnsRetriever:
     root_dns_servers = [
         "198.41.0.4",
-        "192.228.79.201",
-        "192.33.4.12",
-        "199.7.91.13",
-        "192.203.230.10",
-        "192.5.5.241",
-        "192.112.36.4",
-        "128.63.2.53",
-        "192.36.148.17",
-        "192.58.128.30",
-        "193.0.14.129",
-        "199.7.83.42",
-        "202.12.27.33"]
+        # "192.228.79.201",
+        # "192.33.4.12",
+        # "199.7.91.13",
+        # "192.203.230.10",
+        # "192.5.5.241",
+        # "192.112.36.4",
+        # "128.63.2.53",
+        # "192.36.148.17",
+        # "192.58.128.30",
+        # "193.0.14.129",
+        # "199.7.83.42",
+        # "202.12.27.33"
+        ]
 
     def __init__(self):
         self.cache = {}
@@ -240,6 +241,26 @@ class DnsRetriever:
 
         return None
 
+def get_additional_answers(response):
+    additional_records = {}
+    for additional_answer in response.additional:
+        if additional_answer["atype"] == DnsMessage.A:
+            additional_records[additional_answer["aname"]] = ip_to_string(additional_answer["adata"])
+    return additional_records
+
+def get_auth_servers_by_priority(response, additional_records):
+    with_ips = []
+    without_ips = []
+    for aut_server in response.authority:
+        name = aut_server["adata"]
+        if aut_server["atype"] != DnsMessage.NS:
+            without_ips.append(aut_server)
+            continue
+        if name in additional_records:
+            with_ips.append(aut_server)
+        else:
+            without_ips.append(aut_server)
+    return with_ips + without_ips
 
 def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: list):
     if len(ip_addrs) == 0:
@@ -257,23 +278,10 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
         if response.answer_count > 0:
             dns_retriever.cache_dns_response(response)
             return response
-        additional_records = {}
-        for additional_answer in response.additional:
-            if additional_answer["atype"] == DnsMessage.A:
-                additional_records[additional_answer["aname"]] = ip_to_string(additional_answer["adata"])
 
-        with_ips = []
-        without_ips = []
-        for aut_server in response.authority:
-            name = aut_server["adata"]
-            if aut_server["atype"] != DnsMessage.NS:
-                without_ips.append(aut_server)
-                continue
-            if name in additional_records:
-                with_ips.append(aut_server)
-            else:
-                without_ips.append(aut_server)
-        auth_servers = with_ips + without_ips
+        additional_records = get_additional_answers(response)
+        auth_servers = get_auth_servers_by_priority(response, additional_records)
+
         for aut_server in auth_servers:
             name = aut_server["adata"]
             if aut_server["atype"] != DnsMessage.NS:
