@@ -142,7 +142,7 @@ class DnsRetriever:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def get_from_zone_file(self, message: DnsMessage):
-        domain_name = message.questions[0]["qname"][:-1].decode("ascii")
+        domain_name = message.questions[0]["qname"].decode("ascii")
         if domain_name not in self.zone_files:
             return None
         z = self.zone_files[domain_name]
@@ -157,27 +157,27 @@ class DnsRetriever:
             if tp == DnsMessage.MX:
                 pr, tx = answer
                 tx = get_labels_from_string(tx.encode("ascii"))
-                res_data += pack("!HHHIHH", int("1100000000001100", 2), DnsMessage.MX, 1, z.names.ttl, len(tx) + 2,
+                res_data += pack("!HHHIHH", int("1100000000001100", 2), DnsMessage.MX, 1, z.names[domain_name].ttl, len(tx) + 2,
                                  pr) + tx
             elif tp == DnsMessage.TXT:
                 tx = answer
                 tx = tx.encode("ascii")
-                res_data += pack("!HHHIHB", int("1100000000001100", 2), DnsMessage.TXT, 1, z.names.ttl, len(tx) + 1,
+                res_data += pack("!HHHIHB", int("1100000000001100", 2), DnsMessage.TXT, 1, z.names[domain_name].ttl, len(tx) + 1,
                                  len(tx)) + tx
             elif tp == DnsMessage.NS:
                 tx = answer
                 tx = get_labels_from_string(tx.encode("ascii"))
-                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.NS, 1, z.names.ttl, len(tx)) + tx
+                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.NS, 1, z.names[domain_name].ttl, len(tx)) + tx
             elif tp == DnsMessage.A:
                 tx = answer
                 tx = tx.encode("ascii").split(b".")
-                res_data += pack("!HHHIHBBBB", int("1100000000001100", 2), DnsMessage.A, 1, z.names.ttl, 4, int(tx[0]),
+                res_data += pack("!HHHIHBBBB", int("1100000000001100", 2), DnsMessage.A, 1, z.names[domain_name].ttl, 4, int(tx[0]),
                                  int(tx[1]), int(tx[2]), int(tx[3]))
             elif tp == DnsMessage.SOA:
                 tx = answer.split(" ")
                 data = get_labels_from_string(tx[0].encode("ascii")) + get_labels_from_string(tx[1].encode("ascii"))
                 data += pack("!IIIII", int(tx[2]), int(tx[3]), int(tx[4]), int(tx[5]), int(tx[6]))
-                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.SOA, 1, z.names.ttl, len(data)) + data
+                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.SOA, 1, z.names[domain_name].ttl, len(data)) + data
         return DnsMessage(res_data)
 
     def cache_dns_response(self, response: DnsMessage):
@@ -336,7 +336,7 @@ def handle_client(sock: socket, addr: tuple, data: bytes, dns_retriever: DnsRetr
 
 def fill_from_config_files(config_path: str, dns_retriever: DnsRetriever):
     for filename in os.listdir(config_path):
-        domain_name = filename[:-5]
+        domain_name = filename[:-4]
         dns_retriever.zone_files[domain_name] = easyzone.zone_from_file(domain_name, config_path + "/" + filename)
 
 
