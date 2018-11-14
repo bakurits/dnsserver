@@ -13,6 +13,16 @@ from easyzone import easyzone
 from struct import pack
 
 
+class DnsAnswer:
+    def __init__(self, name: bytes, typ: int, cls: int, ttl: int, data_len: int, data: bytes):
+        self.name = name
+        self.type = typ
+        self.cls = cls
+        self.data_len = data_len
+        self.data = data
+        self.ttl = ttl
+
+
 class DnsMessage:
     A = 1
     NS = 2
@@ -87,27 +97,30 @@ class DnsMessage:
             a_data, offset = self.parse_a_data(a_data_len, a_type, self.data, offset + 10)
             if a_type == DnsMessage.NS:
                 a_data = to_lower(a_data)
-            answer = {"aname": to_lower(a_name), "atype": a_type, "aclass": a_class, "attl": a_ttl,
-                      "adatalen": a_data_len, "adata": a_data}
+            answer = DnsAnswer(to_lower(a_name), a_type, a_class, a_ttl, a_data_len, a_data)
             lst.append(answer)
         return offset
+
+    @staticmethod
+    def get_cant_fount_header_flags():
+        return pack("!H", int("1000000000000011", 2))
 
     def __str__(self):
         res = ""
         res += 'Answer section:\n'
         for answer in self.answers:
-            res += "{:20s}{:10s}{:5s}{:5s}   {}\n".format(answer["aname"].decode("ascii"), str(answer["attl"]), "IN",
-                                                          DnsMessage.codes[answer["atype"]], answer["adata"])
+            res += "{:20s}{:10s}{:5s}{:5s}   {}\n".format(answer.name.decode("ascii"), str(answer.ttl), "IN",
+                                                          DnsMessage.codes[answer.type], answer.data)
 
         res += 'Authority section:\n'
         for answer in self.authority:
-            res += "{:20s}{:10s}{:5s}{:5s}   {}\n".format(answer["aname"].decode("ascii"), str(answer["attl"]), "IN",
-                                                          DnsMessage.codes[answer["atype"]], answer["adata"])
+            res += "{:20s}{:10s}{:5s}{:5s}   {}\n".format(answer.name.decode("ascii"), str(answer.ttl), "IN",
+                                                          DnsMessage.codes[answer.type], answer.data)
 
         res += 'Additional section:\n'
         for answer in self.additional:
-            res += "{:20s}{:10s}{:5s}{:5s}   {}\n".format(answer["aname"].decode("ascii"), str(answer["attl"]), "IN",
-                                                          DnsMessage.codes[answer["atype"]], answer["adata"])
+            res += "{:20s}{:10s}{:5s}{:5s}   {}\n".format(answer.name.decode("ascii"), str(answer.ttl), "IN",
+                                                          DnsMessage.codes[answer.type], answer.data)
         return res
 
 
@@ -157,43 +170,46 @@ class DnsRetriever:
             if tp == DnsMessage.MX:
                 pr, tx = answer
                 tx = get_labels_from_string(tx.encode("ascii"))
-                res_data += pack("!HHHIHH", int("1100000000001100", 2), DnsMessage.MX, 1, z.names[domain_name].ttl, len(tx) + 2,
+                res_data += pack("!HHHIHH", int("1100000000001100", 2), DnsMessage.MX, 1, z.names[domain_name].ttl,
+                                 len(tx) + 2,
                                  pr) + tx
             elif tp == DnsMessage.TXT:
                 tx = answer
                 tx = tx.encode("ascii")
-                res_data += pack("!HHHIHB", int("1100000000001100", 2), DnsMessage.TXT, 1, z.names[domain_name].ttl, len(tx) + 1,
+                res_data += pack("!HHHIHB", int("1100000000001100", 2), DnsMessage.TXT, 1, z.names[domain_name].ttl,
+                                 len(tx) + 1,
                                  len(tx)) + tx
             elif tp == DnsMessage.NS:
                 tx = answer
                 tx = get_labels_from_string(tx.encode("ascii"))
-                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.NS, 1, z.names[domain_name].ttl, len(tx)) + tx
+                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.NS, 1, z.names[domain_name].ttl,
+                                 len(tx)) + tx
             elif tp == DnsMessage.A:
                 tx = answer
                 tx = tx.encode("ascii").split(b".")
-                res_data += pack("!HHHIHBBBB", int("1100000000001100", 2), DnsMessage.A, 1, z.names[domain_name].ttl, 4, int(tx[0]),
+                res_data += pack("!HHHIHBBBB", int("1100000000001100", 2), DnsMessage.A, 1, z.names[domain_name].ttl, 4,
+                                 int(tx[0]),
                                  int(tx[1]), int(tx[2]), int(tx[3]))
             elif tp == DnsMessage.SOA:
                 tx = answer.split(" ")
                 data = get_labels_from_string(tx[0].encode("ascii")) + get_labels_from_string(tx[1].encode("ascii"))
                 data += pack("!IIIII", int(tx[2]), int(tx[3]), int(tx[4]), int(tx[5]), int(tx[6]))
-                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.SOA, 1, z.names[domain_name].ttl, len(data)) + data
+                res_data += pack("!HHHIH", int("1100000000001100", 2), DnsMessage.SOA, 1, z.names[domain_name].ttl,
+                                 len(data)) + data
         return DnsMessage(res_data)
 
     def cache_dns_response(self, response: DnsMessage):
-        ttl = 2 ** 60
         for cur_answer in response.answers:
-            if cur_answer["atype"] in [DnsMessage.A, DnsMessage.AAAA, DnsMessage.NS]:
-                ttl = min(ttl, cur_answer["attl"])
+            self.cache.setdefault((cur_answer.name, cur_answer.type), []).append(
+                (cur_answer.ttl + time.time(), cur_answer.data))
         for cur_answer in response.authority:
-            if cur_answer["atype"] in [DnsMessage.A, DnsMessage.AAAA, DnsMessage.NS]:
-                ttl = min(ttl, cur_answer["attl"])
+            self.cache.setdefault((cur_answer.name, cur_answer.type), []).append(
+                (cur_answer.ttl + time.time(), cur_answer.data))
         for cur_answer in response.additional:
-            if cur_answer["atype"] in [DnsMessage.A, DnsMessage.AAAA, DnsMessage.NS]:
-                ttl = min(ttl, cur_answer["attl"])
-        key = (response.questions[0]["qname"], response.questions[0]["qclass"], response.questions[0]["qtype"])
-        if key not in self.cache:
-            self.cache[key] = (ttl + time.time(), response)
+            self.cache.setdefault((cur_answer.name, cur_answer.type), []).append(
+                (cur_answer.ttl + time.time(), cur_answer.data))
+
+        print(self.cache)
 
     def get_cached_response(self, message: DnsMessage):
         key = (message.questions[0]["qname"], message.questions[0]["qclass"], message.questions[0]["qtype"])
@@ -211,9 +227,9 @@ class DnsRetriever:
             self.ip_cache[domain_name] = []
 
         for cur_answer in response.answers:
-            if cur_answer["atype"] == DnsMessage.A:
+            if cur_answer.type == DnsMessage.A:
                 self.ip_cache[domain_name].append(
-                    {"expiration_date": time.time() + cur_answer["attl"], "ip": ip_to_string(cur_answer["adata"])})
+                    {"expiration_date": time.time() + cur_answer.ttl, "ip": ip_to_string(cur_answer.data)})
 
     def get_cached_ips(self, domain_name: bytes):
         if domain_name not in self.ip_cache:
@@ -242,6 +258,7 @@ class DnsRetriever:
             try:
                 data, addr = self.sock.recvfrom(constraints.max_data_size)
                 response = DnsMessage(data)
+                self.cache_dns_response(response)
                 return response
             except OSError:
                 continue
@@ -255,8 +272,8 @@ class DnsRetriever:
 def get_additional_answers(response: DnsMessage):
     additional_records = {}
     for additional_answer in response.additional:
-        if additional_answer["atype"] == DnsMessage.A:
-            additional_records[additional_answer["aname"]] = ip_to_string(additional_answer["adata"])
+        if additional_answer.type == DnsMessage.A:
+            additional_records[additional_answer.name] = ip_to_string(additional_answer.data)
     return additional_records
 
 
@@ -265,8 +282,8 @@ def get_auth_servers_by_priority(response: DnsMessage, additional_records: dict)
     with_ips = []
     without_ips = []
     for aut_server in response.authority:
-        name = aut_server["adata"]
-        if aut_server["atype"] != DnsMessage.NS:
+        name = aut_server.data
+        if aut_server.type != DnsMessage.NS:
             without_ips.append(aut_server)
             continue
         if name in additional_records:
@@ -276,10 +293,11 @@ def get_auth_servers_by_priority(response: DnsMessage, additional_records: dict)
     return with_ips + without_ips
 
 
-def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: list):
+def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: list, fixed: dict):
     if len(ip_addrs) == 0:
         return None
     for ip_addr in ip_addrs:
+
         response = dns_retriever.get_response(message, ip_addr)
         print("Asking {:20} about {:20s}{:5s}{:7s}".format(ip_addr,
                                                            message.questions[0]["qname"].decode(
@@ -290,20 +308,18 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
         if not response:
             continue
         if response.answer_count > 0:
-            dns_retriever.cache_dns_response(response)
             return response
 
         additional_records = get_additional_answers(response)
         auth_servers = get_auth_servers_by_priority(response, additional_records)
 
         for aut_server in auth_servers:
-            name = aut_server["adata"]
-            if aut_server["atype"] != DnsMessage.NS:
+            name = aut_server.data
+            if aut_server.type != DnsMessage.NS:
                 continue
             if name in additional_records:
-                ans = dns_recursion(dns_retriever, message, [additional_records[name]])
+                ans = dns_recursion(dns_retriever, message, [additional_records[name]], fixed)
                 if ans:
-                    dns_retriever.cache_dns_response(ans)
                     return ans
             else:
                 data = copy.copy(message.data)
@@ -311,13 +327,12 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
                 if len(lst) == 0:
                     data = data[: message.questions_offset] + get_labels_from_string(name) + data[
                                                                                              message.questions_name_end:]
-                    cur_response = dns_recursion(dns_retriever, DnsMessage(data), [dns_retriever.get_root_server()])
+                    cur_response = dns_recursion(dns_retriever, DnsMessage(data), [dns_retriever.get_root_server()], fixed)
                     if cur_response:
                         dns_retriever.cache_ips(name, cur_response)
                 lst = dns_retriever.get_cached_ips(name)
-                ans = dns_recursion(dns_retriever, message, lst)
+                ans = dns_recursion(dns_retriever, message, lst, fixed)
                 if ans:
-                    dns_retriever.cache_dns_response(ans)
                     return ans
 
 
@@ -327,11 +342,11 @@ def handle_client(sock: socket, addr: tuple, data: bytes, dns_retriever: DnsRetr
     if res_from_zone:
         response = res_from_zone
     else:
-        response = dns_recursion(dns_retriever, message, [dns_retriever.get_root_server()])
+        response = dns_recursion(dns_retriever, message, [dns_retriever.get_root_server()], {})
     if response:
         sock.sendto(data[:2] + response.data[2:], addr)
     else:
-        sock.sendto(data, addr)
+        sock.sendto(data[:2] + DnsMessage.get_cant_fount_header_flags() + data[4:], addr)
 
 
 def fill_from_config_files(config_path: str, dns_retriever: DnsRetriever):
