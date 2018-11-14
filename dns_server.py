@@ -23,6 +23,13 @@ class DnsAnswer:
         self.ttl = ttl
 
 
+class DnsQuery:
+    def __init__(self, name: bytes, typ: int, cls: int):
+        self.name = name
+        self.type = typ
+        self.cls = cls
+
+
 class DnsMessage:
     A = 1
     NS = 2
@@ -55,7 +62,7 @@ class DnsMessage:
             q_name, offset = self.get_name(self.data, offset)
             self.questions_name_end = offset
             q_type, q_class = unpack("!HH", self.data[offset: offset + 4])
-            question = {"qname": to_lower(q_name), "qtype": q_type, "qclass": q_class}
+            question = DnsQuery(to_lower(q_name), q_class, q_type)
             self.questions.append(question)
             offset += 4
 
@@ -155,11 +162,11 @@ class DnsRetriever:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def get_from_zone_file(self, message: DnsMessage):
-        domain_name = message.questions[0]["qname"].decode("ascii")
+        domain_name = message.questions[0].name.decode("ascii")
         if domain_name not in self.zone_files:
             return None
         z = self.zone_files[domain_name]
-        tp = message.questions[0]["qtype"]
+        tp = message.questions[0].type
         if z.root.records(DnsMessage.codes[tp]):
             answers = z.root.records(DnsMessage.codes[tp]).items
         else:
@@ -212,7 +219,7 @@ class DnsRetriever:
         print(self.cache)
 
     def get_cached_response(self, message: DnsMessage):
-        key = (message.questions[0]["qname"], message.questions[0]["qclass"], message.questions[0]["qtype"])
+        key = (message.questions[0].name, message.questions[0].cls, message.questions[0].type)
         if key not in self.cache:
             return None
         if self.cache[key][0] < time.time():
@@ -300,10 +307,10 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
 
         response = dns_retriever.get_response(message, ip_addr)
         print("Asking {:20} about {:20s}{:5s}{:7s}".format(ip_addr,
-                                                           message.questions[0]["qname"].decode(
+                                                           message.questions[0].name.decode(
                                                                "ascii"), "IN",
                                                            DnsMessage.codes[
-                                                               message.questions[0]["qtype"]]))
+                                                               message.questions[0].type]))
         print(response)
         if not response:
             continue
@@ -327,7 +334,8 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
                 if len(lst) == 0:
                     data = data[: message.questions_offset] + get_labels_from_string(name) + data[
                                                                                              message.questions_name_end:]
-                    cur_response = dns_recursion(dns_retriever, DnsMessage(data), [dns_retriever.get_root_server()], fixed)
+                    cur_response = dns_recursion(dns_retriever, DnsMessage(data), [dns_retriever.get_root_server()],
+                                                 fixed)
                     if cur_response:
                         dns_retriever.cache_ips(name, cur_response)
                 lst = dns_retriever.get_cached_ips(name)
