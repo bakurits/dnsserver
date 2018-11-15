@@ -129,12 +129,12 @@ class DnsMessage:
         res = ""
         res += 'Answer section:\n'
         for answer in self.answers:
-            res += "{:20s}{:10s}{:5s}{:5s}   {}\n".format(answer.name.decode("ascii"), str(answer.ttl), "IN",
+            res += "{:20s} {:10s} {:5s} {:5s}   {}\n".format(answer.name.decode("ascii"), str(answer.ttl), "IN",
                                                           DnsMessage.codes[answer.type], answer.data)
 
         res += 'Authority section:\n'
         for answer in self.authority:
-            res += "{:20s}{:10s}{:5s}{:5s}   {}\n".format(answer.name.decode("ascii"), str(answer.ttl), "IN",
+            res += "{:20s} {:10s} {:5s} {:5s}   {}\n".format(answer.name.decode("ascii"), str(answer.ttl), "IN",
                                                           DnsMessage.codes[answer.type], answer.data)
 
         res += 'Additional section:\n'
@@ -289,7 +289,6 @@ class DnsRetriever:
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.settimeout(1)
         server_address = (str(ip_addr), 53)
-        print(server_address)
         for _ in range(3):
             self.sock.sendto(message.data, server_address)
             try:
@@ -359,12 +358,12 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
             continue
         fixed[(ip_addr, message.questions[0])] = 1
         response = dns_retriever.get_response(message, ip_addr)
-        # print("Asking {:20} about {:20s}{:5s}{:7s}".format(ip_addr,
-        #                                                    message.questions[0].name.decode(
-        #                                                        "ascii"), "IN",
-        #                                                    DnsMessage.codes[
-        #                                                        message.questions[0].type]))
-        # print(response)
+        print("Asking {:30} about {:30s} {:5s} {:7s}".format(ip_addr,
+                                                           message.questions[0].name.decode(
+                                                               "ascii"), "IN",
+                                                           DnsMessage.codes[
+                                                               message.questions[0].type]))
+        print(response)
         if not response:
             continue
         if response.answer_count > 0:
@@ -414,8 +413,9 @@ def handle_client(sock: socket, addr: tuple, data: bytes, dns_retriever: DnsRetr
         if len(cached_res) > 0:
             response = get_response(message, cached_res)
         else:
-            response = dns_recursion(dns_retriever, message, [
-                dns_retriever.get_root_server()], {})
+            lst = get_ips_for_NS(dns_retriever, dns_retriever.get_best_NS_servers(message.questions[0].name))
+            lst.append(dns_retriever.get_root_server())
+            response = dns_recursion(dns_retriever, message, lst, {})
     if response:
         sock.sendto(data[:2] + response.data[2:], addr)
     else:
