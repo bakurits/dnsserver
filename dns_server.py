@@ -69,7 +69,7 @@ class DnsMessage:
             q_name, offset = self.get_name(self.data, offset)
             self.questions_name_end = offset
             q_type, q_class = unpack("!HH", self.data[offset: offset + 4])
-            question = DnsQuery(to_lower(q_name), q_class, q_type)
+            question = DnsQuery(to_lower(q_name), q_type, q_class)
             self.questions.append(question)
             offset += 4
 
