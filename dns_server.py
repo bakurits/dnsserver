@@ -316,15 +316,15 @@ def get_additional_answers(response: DnsMessage):
 
 
 # This method returns authority servers by priority
-def get_auth_servers_by_priority(response: DnsMessage, additional_records: dict):
+def get_auth_servers_by_priority(response: DnsMessage, dns_retriever: DnsRetriever):
     with_ips = []
     without_ips = []
     for aut_server in response.authority:
         name = aut_server.data
         if aut_server.type != DnsMessage.NS:
-            without_ips.append(aut_server)
             continue
-        if name in additional_records:
+        ips = dns_retriever.get_list_by_key((name, DnsMessage.A))
+        if len(ips) > 0:
             with_ips.append(aut_server)
         else:
             without_ips.append(aut_server)
@@ -370,17 +370,19 @@ def dns_recursion(dns_retriever: DnsRetriever, message: DnsMessage, ip_addrs: li
         if response.answer_count > 0:
             return response
 
-        additional_records = get_additional_answers(response)
         auth_servers = get_auth_servers_by_priority(
-            response, additional_records)
+            response, dns_retriever)
 
         for aut_server in auth_servers:
             name = aut_server.data
             if aut_server.type != DnsMessage.NS:
                 continue
-            if name in additional_records:
-                ans = dns_recursion(dns_retriever, message, [
-                    additional_records[name]], fixed)
+            ips_with_ttl = dns_retriever.get_list_by_key((name, DnsMessage.A))
+            ips_lst = []
+            for ttl, ip in ips_with_ttl:
+                ips_lst.append(ip_to_string(ip))
+            if len(ips_lst) > 0:
+                ans = dns_recursion(dns_retriever, message, ips_lst, fixed)
                 if ans:
                     return ans
             else:
